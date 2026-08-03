@@ -310,11 +310,14 @@ impl LanguageServer for Backend {
     }
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<serde_json::Value>> {
+        self.client.log_message(MessageType::INFO, format!("Executing command: {}", params.command)).await;
         if params.command == "twee3.runPassage" {
             let args = params.arguments;
             if args.len() >= 2 {
                 if let (Some(passage_name), Some(_uri_str)) = (args[0].as_str(), args[1].as_str()) {
-                    let _ = self.run_tweego(passage_name.to_string()).await;
+                    if let Err(e) = self.run_tweego(passage_name.to_string()).await {
+                        self.client.log_message(MessageType::ERROR, format!("Run passage failed: {}", e)).await;
+                    }
                 }
             }
         }
@@ -339,7 +342,16 @@ impl Backend {
             }
         }
 
-        let tweego_path = std::env::var("TWEEGO_PATH").unwrap_or_else(|_| "tweego".to_string());
+        let mut tweego_path = std::env::var("TWEEGO_PATH").unwrap_or_else(|_| "tweego".to_string());
+        
+        // Try local node_modules on Windows
+        #[cfg(target_os = "windows")]
+        {
+            let local_tweego = workspace_path.join("node_modules").join(".bin").join("tweego.cmd");
+            if local_tweego.exists() {
+                tweego_path = local_tweego.to_string_lossy().to_string();
+            }
+        }
         
         let out_file = config.output_file.unwrap_or_else(|| "dist/game.html".to_string());
         let src_dir = config.source_dir.unwrap_or_else(|| "src".to_string());
@@ -367,12 +379,11 @@ impl Backend {
             .args(&args)
             .current_dir(&workspace_path)
             .output()
-            .map_err(|e| format!("Failed to run Tweego: {}", e))?;
+            .map_err(|e| format!("Failed to spawn Tweego ({}): {}", tweego_path, e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            self.client.log_message(MessageType::ERROR, format!("Tweego build failed: {}", stderr)).await;
-            return Err("Tweego build failed".to_string());
+            return Err(format!("Tweego build failed: {}", stderr));
         }
 
         let out_abs = workspace_path.join(out_file);
@@ -380,13 +391,13 @@ impl Backend {
 
         // Open in browser
         #[cfg(target_os = "windows")]
-        let _ = Command::new("cmd").args(&["/C", "start", "", out_abs.to_str().unwrap()]).output();
+        let _ = Command::new("cmd").args(&["/C", "start", "", out_abs.to_str().unwrap()]).spawn();
 
         #[cfg(target_os = "macos")]
-        let _ = Command::new("open").arg(out_abs).output();
+        let _ = Command::new("open").arg(out_abs).spawn();
 
         #[cfg(target_os = "linux")]
-        let _ = Command::new("xdg-open").arg(out_abs).output();
+        let _ = Command::new("xdg-open").arg(out_abs).spawn();
 
         Ok(())
     }
