@@ -8,6 +8,18 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use walkdir::WalkDir;
 use std::process::Command;
+use serde::Deserialize;
+
+#[derive(Deserialize, Debug, Default)]
+struct TweeConfig {
+    #[serde(rename = "storyFormat")]
+    story_format: Option<String>,
+    #[serde(rename = "sourceDir")]
+    source_dir: Option<String>,
+    #[serde(rename = "outputFile")]
+    output_file: Option<String>,
+    modules: Option<Vec<String>>,
+}
 
 #[derive(Debug)]
 struct Backend {
@@ -40,6 +52,13 @@ impl LanguageServer for Backend {
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(true),
                     trigger_characters: Some(vec!["<".to_string()]),
+                    ..Default::default()
+                }),
+                code_lens_provider: Some(CodeLensOptions {
+                    resolve_provider: Some(false),
+                }),
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec!["twee3.runPassage".to_string()],
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -172,8 +191,64 @@ impl LanguageServer for Backend {
         Ok(Some(CompletionResponse::Array(completions)))
     }
 
-    async fn completion_resolve(&self, mut item: CompletionItem) -> Result<CompletionItem> {
+    async fn completion_resolve(&self, item: CompletionItem) -> Result<CompletionItem> {
         Ok(item)
+    }
+
+    async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
+        let uri = params.text_document.uri.clone();
+        
+        let path = match uri.to_file_path() {
+            Ok(p) => p,
+            Err(_) => return Ok(None),
+        };
+        
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+
+        let mut lenses = vec![];
+        let re = Regex::new(r"(?m)^::\s*(.+?)(?:\s*\[|$)").unwrap();
+
+        for cap in re.captures_iter(&text) {
+            if let Some(m) = cap.get(0) {
+                if let Some(name_match) = cap.get(1) {
+                    let passage_name = name_match.as_str().trim().to_string();
+                    let start_pos = byte_offset_to_position(&text, m.start());
+                    let end_pos = byte_offset_to_position(&text, m.end());
+
+                    let command = tower_lsp::lsp_types::Command {
+                        title: "▶ Run Passage".to_string(),
+                        command: "twee3.runPassage".to_string(),
+                        arguments: Some(vec![
+                            serde_json::Value::String(passage_name),
+                            serde_json::Value::String(uri.to_string()),
+                        ]),
+                    };
+
+                    lenses.push(CodeLens {
+                        range: Range { start: start_pos, end: end_pos },
+                        command: Some(command),
+                        data: None,
+                    });
+                }
+            }
+        }
+
+        Ok(Some(lenses))
+    }
+
+    async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<serde_json::Value>> {
+        if params.command == "twee3.runPassage" {
+            let args = params.arguments;
+            if args.len() >= 2 {
+                if let (Some(passage_name), Some(_uri_str)) = (args[0].as_str(), args[1].as_str()) {
+                    let _ = self.run_tweego(passage_name.to_string()).await;
+                }
+            }
+        }
+        Ok(None)
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -182,6 +257,70 @@ impl LanguageServer for Backend {
 }
 
 impl Backend {
+    async fn run_tweego(&self, passage_name: String) -> std::result::Result<(), String> {
+        let wp = self.workspace_path.read().await.clone();
+        let workspace_path = wp.ok_or("No workspace found")?;
+
+        let config_path = workspace_path.join("twee-config.yaml");
+        let mut config = TweeConfig::default();
+        if let Ok(yaml) = std::fs::read_to_string(&config_path) {
+            if let Ok(parsed) = serde_yaml::from_str::<TweeConfig>(&yaml) {
+                config = parsed;
+            }
+        }
+
+        let tweego_path = std::env::var("TWEEGO_PATH").unwrap_or_else(|_| "tweego".to_string());
+        
+        let out_file = config.output_file.unwrap_or_else(|| "dist/game.html".to_string());
+        let src_dir = config.source_dir.unwrap_or_else(|| "src".to_string());
+        
+        let mut args = vec![
+            "-o".to_string(), out_file.clone(),
+            "-s".to_string(), passage_name.clone(),
+            src_dir,
+        ];
+
+        if let Some(format) = config.story_format {
+            args.push("-f".to_string());
+            args.push(format);
+        }
+
+        if let Some(modules) = config.modules {
+            for md in modules {
+                args.push(format!("--module={}", md));
+            }
+        }
+
+        self.client.log_message(MessageType::INFO, format!("Running Tweego: {} {}", tweego_path, args.join(" "))).await;
+
+        let output = Command::new(&tweego_path)
+            .args(&args)
+            .current_dir(&workspace_path)
+            .output()
+            .map_err(|e| format!("Failed to run Tweego: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            self.client.log_message(MessageType::ERROR, format!("Tweego build failed: {}", stderr)).await;
+            return Err("Tweego build failed".to_string());
+        }
+
+        let out_abs = workspace_path.join(out_file);
+        self.client.log_message(MessageType::INFO, format!("Successfully compiled passage '{}' to {:?}", passage_name, out_abs)).await;
+
+        // Open in browser
+        #[cfg(target_os = "windows")]
+        let _ = Command::new("cmd").args(&["/C", "start", "", out_abs.to_str().unwrap()]).output();
+
+        #[cfg(target_os = "macos")]
+        let _ = Command::new("open").arg(out_abs).output();
+
+        #[cfg(target_os = "linux")]
+        let _ = Command::new("xdg-open").arg(out_abs).output();
+
+        Ok(())
+    }
+
     async fn validate_text_document(&self, uri: Url, text: String) {
         let re = Regex::new(r"\b[A-Z]{2,}\b").unwrap();
         let mut diagnostics = vec![];

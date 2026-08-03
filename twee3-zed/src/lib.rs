@@ -66,10 +66,64 @@ impl zed::Extension for Twee3Extension {
             zed::make_file_executable(&binary_path).map_err(|e| format!("failed to make file executable: {e}"))?;
         }
 
+        // --- Tweego Auto-Download Logic ---
+        let tweego_release = zed::latest_github_release(
+            "tmedwards/tweego",
+            zed::GithubReleaseOptions {
+                require_assets: true,
+                pre_release: false,
+            },
+        )?;
+
+        let tweego_asset_name = format!(
+            "tweego-{version}-{os}-{arch}.zip",
+            version = tweego_release.version,
+            os = match os {
+                zed::Os::Mac => "macos",
+                zed::Os::Linux => "linux",
+                zed::Os::Windows => "windows",
+            },
+            arch = match arch {
+                zed::Architecture::Aarch64 => "x64", // Tweego doesn't have native ARM, x64 works via Rosetta/Rosetta2
+                zed::Architecture::X8664 => "x64",
+                _ => return Err("Unsupported architecture for Tweego".to_string()),
+            }
+        );
+
+        let tweego_asset = tweego_release
+            .assets
+            .iter()
+            .find(|asset| asset.name == tweego_asset_name)
+            .ok_or_else(|| format!("no asset found matching {:?}", tweego_asset_name))?;
+
+        let tweego_version_dir = format!("tweego-{}", tweego_release.version);
+        let tweego_binary_path = format!("{tweego_version_dir}/tweego{extension}", extension = match os {
+            zed::Os::Windows => ".exe",
+            _ => "",
+        });
+
+        if !fs::metadata(&tweego_binary_path).map_or(false, |stat| stat.is_file()) {
+            zed::set_language_server_installation_status(
+                language_server_id,
+                &zed::LanguageServerInstallationStatus::Downloading,
+            );
+
+            zed::download_file(
+                &tweego_asset.download_url,
+                &tweego_version_dir,
+                zed::DownloadedFileType::Zip,
+            )
+            .map_err(|e| format!("failed to download Tweego: {e}"))?;
+
+            zed::make_file_executable(&tweego_binary_path).map_err(|e| format!("failed to make Tweego executable: {e}"))?;
+        }
+
+        let env = vec![("TWEEGO_PATH".to_string(), tweego_binary_path)];
+
         Ok(zed::Command {
             command: binary_path,
             args: vec![],
-            env: Default::default(),
+            env,
         })
     }
 }
