@@ -32,4 +32,5 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+*.twee
 spec.md

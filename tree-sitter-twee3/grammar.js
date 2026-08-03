@@ -6,7 +6,12 @@ module.exports = grammar({
   ],
 
   conflicts: $ => [
-    [$.passage_header]
+    [$.passage_header],
+    [$._link_simple, $._link_piped, $._link_right, $._link_left],
+    [$.link_text],
+    [$.image_source, $._image_linked, $._image_simple],
+    [$.image_source],
+    [$.variable]
   ],
 
   rules: {
@@ -59,16 +64,27 @@ module.exports = grammar({
     passage_content: $ => repeat1(choice(
       $.text,
       $.macro,
-      $.link
+      $.macro_close,
+      $.link,
+      $.image,
+      $.variable,
+      $.text_formatting
     )),
 
     text: $ => choice(
-      /[^<\[:{\n]+/,
+      /[^<\[:{\n$'_/=^~]+/,
       ':',
       '<',
       '[',
       '{',
-      '\n'
+      '\n',
+      '$',
+      "'",
+      '_',
+      '/',
+      '=',
+      '^',
+      '~'
     ),
 
     macro: $ => seq(
@@ -78,37 +94,54 @@ module.exports = grammar({
       '>>'
     ),
 
-    macro_name: $ => /[a-zA-Z0-9_\-\/]+/,
+    macro_close: $ => seq(
+      '<</',
+      $.macro_name,
+      '>>'
+    ),
+
+    macro_name: $ => /[a-zA-Z][a-zA-Z0-9_\-]*/,
 
     macro_arg: $ => choice(
       $.string,
       $.variable,
-      $.attribute,
       $.number,
       $.boolean,
-      '=',
-      ',',
-      '[',
-      ']',
-      '{',
-      '}',
-      ':',
-      /[^\s"'=,\[\]{}<>:]+/
+      $.keyword_operator,
+      $.operator,
+      $.bracket,
+      /[^\s"'=,\[\]{}<>:a-zA-Z0-9_]+/
+    ),
+
+    keyword_operator: $ => choice(
+      'to', 'eq', 'neq', 'is', 'not', 'and', 'or', 'lt', 'lte', 'gt', 'gte', 'def', 'ndef'
+    ),
+
+    operator: $ => choice(
+      '=', '==', '===', '!=', '!==', '>', '>=', '<', '<=', '+', '-', '*', '/', '%', '+=', '-=', '*=', '/=', '%=', '!', '&&', '||', '?', ':'
+    ),
+
+    bracket: $ => choice(
+      '(', ')', '[', ']', '{', '}'
     ),
 
     string: $ => choice(
       seq('"', /[^"]*/, '"'),
-      seq("'", /[^']*/, "'")
+      seq("'", /[^']*/, "'"),
+      seq("`", /[^`]*/, "`")
     ),
 
-    variable: $ => /\$[a-zA-Z0-9_]+/,
-
-    attribute: $ => seq(
-      $.attribute_name,
-      '='
+    variable: $ => choice(
+      seq('$', $.identifier, optional($._property_access)),
+      seq('_', $.identifier, optional($._property_access))
     ),
 
-    attribute_name: $ => /[a-zA-Z0-9_\-]+/,
+    identifier: $ => /[a-zA-Z_][a-zA-Z0-9_]*/,
+
+    _property_access: $ => repeat1(choice(
+      seq('.', $.identifier),
+      seq('[', choice($.string, $.number, $.variable), ']')
+    )),
 
     number: $ => /\d+(?:\.\d+)?/,
 
@@ -116,10 +149,80 @@ module.exports = grammar({
 
     link: $ => seq(
       '[[',
-      $.link_text,
+      choice(
+        $._link_right,
+        $._link_left,
+        $._link_piped,
+        $._link_simple
+      ),
+      optional($.link_setter),
       ']]'
     ),
 
-    link_text: $ => /(?:[^\]]|\][^\]])+/
+    _link_simple: $ => field('passage', $.link_text),
+    
+    _link_piped: $ => seq(
+      field('text', $.link_text),
+      '|',
+      field('passage', $.link_text)
+    ),
+
+    _link_right: $ => seq(
+      field('text', $.link_text),
+      '->',
+      field('passage', $.link_text)
+    ),
+
+    _link_left: $ => seq(
+      field('passage', $.link_text),
+      '<-',
+      field('text', $.link_text)
+    ),
+
+    link_text: $ => repeat1(choice(
+      /[^\]\[\|<\-]+/,
+      '<',
+      '-',
+      '['
+    )),
+
+    link_setter: $ => seq(
+      '][',
+      repeat($.macro_arg)
+    ),
+
+    image: $ => seq(
+      '[img[',
+      choice(
+        $._image_linked,
+        $._image_simple
+      ),
+      ']]'
+    ),
+
+    _image_simple: $ => $.image_source,
+
+    _image_linked: $ => seq(
+      $.image_source,
+      '[',
+      field('link', $.link_text),
+      ']'
+    ),
+
+    image_source: $ => repeat1(choice(
+      /[^\]\[\|]+/,
+      '|',
+      '[',
+      ']'
+    )),
+
+    text_formatting: $ => choice(
+      seq("''", repeat(choice($.text, $.variable)), "''"),
+      seq("//", repeat(choice($.text, $.variable)), "//"),
+      seq("__", repeat(choice($.text, $.variable)), "__"),
+      seq("==", repeat(choice($.text, $.variable)), "=="),
+      seq("^^", repeat(choice($.text, $.variable)), "^^"),
+      seq("~~", repeat(choice($.text, $.variable)), "~~")
+    )
   }
 });

@@ -6,11 +6,27 @@
 (tag) @string
 (string) @string
 (variable) @variable
-(attribute_name) @property
 (number) @number
 (boolean) @boolean
+(keyword_operator) @keyword
+(operator) @operator
+(image_source) @string.link
+
+; Text Formatting
+((text_formatting) @markup.bold (#match? @markup.bold "^''"))
+((text_formatting) @markup.italic (#match? @markup.italic "^//"))
+((text_formatting) @markup.underline (#match? @markup.underline "^__"))
+((text_formatting) @markup.strikethrough (#match? @markup.strikethrough "^=="))
+
+; Punctuation
 "::" @punctuation.special
 "[[" @punctuation.bracket
 "]]" @punctuation.bracket
 "<<" @punctuation.bracket
 ">>" @punctuation.bracket
+"<</" @punctuation.bracket
+"][" @punctuation.bracket
+"|" @punctuation.delimiter
+"->" @punctuation.delimiter
+"<-" @punctuation.delimiter
+"[img[" @punctuation.bracket
