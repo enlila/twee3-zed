@@ -1,0 +1,26 @@
+{
+  "grammars": [
+    {
+      "name": "twee3",
+      "camelcase": "Twee3",
+      "title": "Twee 3",
+      "scope": "source.twee3",
+      "file-types": [
+        "twee"
+      ]
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Twee 3 grammar for tree-sitter",
+    "authors": [
+      {
+        "name": "Prasad Madanayake"
+      }
+    ],
+    "links": {
+      "repository": "https://github.com/enlila/twee3-zed"
+    }
+  }
+}
