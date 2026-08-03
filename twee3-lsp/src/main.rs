@@ -83,22 +83,29 @@ impl LanguageServer for Backend {
             if is_twee {
                 // Dynamic NPM Installation for @types/twine-sugarcube
                 let package_json_path = workspace_path.join("package.json");
+                let node_modules_types = workspace_path.join("node_modules").join("@types").join("twine-sugarcube");
+                let twee3_dir = workspace_path.join(".twee3");
+                let twee3_node_modules_types = twee3_dir.join("node_modules").join("@types").join("twine-sugarcube");
+
                 if package_json_path.exists() {
-                    // Node project: install into the project's devDependencies
-                    self.client.log_message(MessageType::INFO, "Found package.json. Installing @types/twine-sugarcube...").await;
-                    let _ = Command::new("npm")
-                        .args(&["install", "--save-dev", "@types/twine-sugarcube"])
-                        .current_dir(&workspace_path)
-                        .output();
+                    // Node project: install into the project's devDependencies if not present
+                    if !node_modules_types.exists() {
+                        self.client.log_message(MessageType::INFO, "Found package.json. Installing @types/twine-sugarcube...").await;
+                        let _ = Command::new("npm")
+                            .args(&["install", "--save-dev", "@types/twine-sugarcube"])
+                            .current_dir(&workspace_path)
+                            .output();
+                    }
                 } else {
-                    // Non-Node project: install into a hidden .twee3 folder
-                    self.client.log_message(MessageType::INFO, "No package.json found. Installing types into .twee3 hidden directory...").await;
-                    let twee3_dir = workspace_path.join(".twee3");
-                    let _ = std::fs::create_dir_all(&twee3_dir);
-                    let _ = Command::new("npm")
-                        .args(&["install", "--no-save", "@types/twine-sugarcube"])
-                        .current_dir(&twee3_dir)
-                        .output();
+                    // Non-Node project: install into a hidden .twee3 folder if not present
+                    if !twee3_node_modules_types.exists() {
+                        self.client.log_message(MessageType::INFO, "No package.json found. Installing types into .twee3 hidden directory...").await;
+                        let _ = std::fs::create_dir_all(&twee3_dir);
+                        let _ = Command::new("npm")
+                            .args(&["install", "--no-save", "@types/twine-sugarcube"])
+                            .current_dir(&twee3_dir)
+                            .output();
+                    }
 
                     // Write jsconfig.json if not present
                     let jsconfig_path = workspace_path.join("jsconfig.json");
