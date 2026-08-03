@@ -4,6 +4,7 @@ target/
 
 # Zed Extension Build Artifacts
 twee3-zed/extension.wasm
+twee3-zed/grammars/
 
 # Node.js (Tree-sitter Grammar)
 node_modules/
