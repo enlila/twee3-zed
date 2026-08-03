@@ -56,6 +56,9 @@ impl zed::Extension for Twee3Extension {
                 &zed::LanguageServerInstallationStatus::Downloading,
             );
 
+            fs::create_dir_all(&version_dir)
+                .map_err(|e| format!("failed to create version directory: {e}"))?;
+
             zed::download_file(
                 &asset.download_url,
                 &binary_path,
@@ -107,6 +110,9 @@ impl zed::Extension for Twee3Extension {
                 language_server_id,
                 &zed::LanguageServerInstallationStatus::Downloading,
             );
+
+            fs::create_dir_all(&tweego_version_dir)
+                .map_err(|e| format!("failed to create tweego version directory: {e}"))?;
 
             zed::download_file(
                 &tweego_asset.download_url,
