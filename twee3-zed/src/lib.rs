@@ -78,9 +78,10 @@ impl zed::Extension for Twee3Extension {
             },
         )?;
 
+        let version_without_v = tweego_release.version.strip_prefix('v').unwrap_or(&tweego_release.version);
         let tweego_asset_name = format!(
             "tweego-{version}-{os}-{arch}.zip",
-            version = tweego_release.version,
+            version = version_without_v,
             os = match os {
                 zed::Os::Mac => "macos",
                 zed::Os::Linux => "linux",
