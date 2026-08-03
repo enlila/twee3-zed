@@ -1,6 +1,6 @@
 use regex::Regex;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
@@ -46,9 +46,7 @@ impl LanguageServer for Backend {
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::FULL,
-                )),
+                text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(true),
                     trigger_characters: Some(vec!["<".to_string()]),
@@ -57,20 +55,22 @@ impl LanguageServer for Backend {
                 code_lens_provider: Some(CodeLensOptions {
                     resolve_provider: Some(false),
                 }),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec!["twee3.runPassage".to_string()],
                     ..Default::default()
                 }),
-                ..Default::default()
+                ..ServerCapabilities::default()
             },
-            ..Default::default()
+            server_info: Some(ServerInfo {
+                name: "twee3-language-server".to_string(),
+                version: Some("0.0.1".to_string()),
+            }),
         })
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        self.client
-            .log_message(MessageType::INFO, "twee3-lsp initialized!")
-            .await;
+        self.client.log_message(MessageType::INFO, "twee3-lsp initialized!").await;
 
         let wp = self.workspace_path.read().await.clone();
         if let Some(workspace_path) = wp {
@@ -207,12 +207,18 @@ impl LanguageServer for Backend {
         
         let path = match uri.to_file_path() {
             Ok(p) => p,
-            Err(_) => return Ok(None),
+            Err(_) => {
+                self.client.log_message(MessageType::WARNING, format!("CodeLens: Failed to convert URI to file path: {}", uri)).await;
+                return Ok(None);
+            }
         };
         
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
-            Err(_) => return Ok(None),
+            Err(e) => {
+                self.client.log_message(MessageType::WARNING, format!("CodeLens: Failed to read file {}: {}", path.display(), e)).await;
+                return Ok(None);
+            }
         };
 
         let mut lenses = vec![];
@@ -229,7 +235,7 @@ impl LanguageServer for Backend {
                         title: "▶ Run Passage".to_string(),
                         command: "twee3.runPassage".to_string(),
                         arguments: Some(vec![
-                            serde_json::Value::String(passage_name),
+                            serde_json::Value::String(passage_name.clone()),
                             serde_json::Value::String(uri.to_string()),
                         ]),
                     };
@@ -243,7 +249,64 @@ impl LanguageServer for Backend {
             }
         }
 
+        self.client.log_message(MessageType::INFO, format!("CodeLens: Found {} lenses for {}", lenses.len(), path.display())).await;
+
         Ok(Some(lenses))
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        let uri = params.text_document.uri.clone();
+        
+        let path = match uri.to_file_path() {
+            Ok(p) => p,
+            Err(_) => return Ok(None),
+        };
+        
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+
+        let mut actions = vec![];
+        let re = Regex::new(r"(?m)^::\s*(.+?)(?:\s*\[|$)").unwrap();
+
+        for cap in re.captures_iter(&text) {
+            if let Some(m) = cap.get(0) {
+                let start_pos = byte_offset_to_position(&text, m.start());
+                let _end_pos = byte_offset_to_position(&text, m.end());
+                
+                // If the cursor is anywhere on the passage header line
+                if params.range.start.line == start_pos.line || params.range.end.line == start_pos.line {
+                    if let Some(name_match) = cap.get(1) {
+                        let passage_name = name_match.as_str().trim().to_string();
+
+                        let command = tower_lsp::lsp_types::Command {
+                            title: format!("▶ Run Passage: {}", passage_name),
+                            command: "twee3.runPassage".to_string(),
+                            arguments: Some(vec![
+                                serde_json::Value::String(passage_name.clone()),
+                                serde_json::Value::String(uri.to_string()),
+                            ]),
+                        };
+                        
+                        let action = tower_lsp::lsp_types::CodeAction {
+                            title: format!("▶ Run Passage: {}", passage_name),
+                            kind: Some(tower_lsp::lsp_types::CodeActionKind::QUICKFIX),
+                            diagnostics: None,
+                            edit: None,
+                            command: Some(command),
+                            is_preferred: Some(true),
+                            disabled: None,
+                            data: None,
+                        };
+
+                        actions.push(CodeActionOrCommand::CodeAction(action));
+                    }
+                }
+            }
+        }
+        
+        Ok(Some(actions))
     }
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<serde_json::Value>> {

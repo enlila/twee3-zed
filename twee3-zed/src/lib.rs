@@ -68,7 +68,6 @@ impl zed::Extension for Twee3Extension {
 
             zed::make_file_executable(&binary_path).map_err(|e| format!("failed to make file executable: {e}"))?;
         }
-
         // --- Tweego Auto-Download Logic ---
         let tweego_release = zed::latest_github_release(
             "tmedwards/tweego",
