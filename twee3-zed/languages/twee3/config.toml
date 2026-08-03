@@ -1,0 +1,4 @@
+name = "Twee3"
+grammar = "twee3"
+path_suffixes = ["tw", "twee"]
+line_comments = ["/* "]

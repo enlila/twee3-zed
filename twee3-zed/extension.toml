@@ -1,0 +1,16 @@
+id = "twee3-zed"
+name = "Twee 3 Language Tools"
+version = "0.0.2"
+schema_version = 1
+authors = ["Prasad Madanayake"]
+description = "Twee 3 support for Zed"
+repository = "https://github.com/cyrusfirheir/twee3-zed"
+
+[grammars.twee3]
+repository = "https://github.com/enlila/twee3-zed"
+commit = "main"
+path = "tree-sitter-twee3"
+
+[language_servers.twee3-language-server]
+name = "Twee3 LSP"
+languages = ["Twee3"]

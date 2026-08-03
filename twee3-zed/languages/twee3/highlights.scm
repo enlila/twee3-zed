@@ -1,0 +1,16 @@
+(passage_name) @function
+(macro_name) @keyword
+(link_text) @string.special
+(tags) @property
+(metadata) @string.special
+(tag) @string
+(string) @string
+(variable) @variable
+(attribute_name) @property
+(number) @number
+(boolean) @boolean
+"::" @punctuation.special
+"[[" @punctuation.bracket
+"]]" @punctuation.bracket
+"<<" @punctuation.bracket
+">>" @punctuation.bracket
