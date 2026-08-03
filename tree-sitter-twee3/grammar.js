@@ -2,7 +2,7 @@ module.exports = grammar({
   name: 'twee3',
 
   extras: $ => [
-    /\s+/
+    /[ \t\r]+/
   ],
 
   conflicts: $ => [
@@ -10,42 +10,51 @@ module.exports = grammar({
   ],
 
   rules: {
-    source_file: $ => repeat($.passage),
+    source_file: $ => seq(
+      optional($._leading_newlines),
+      repeat($.passage)
+    ),
+
+    _leading_newlines: $ => repeat1('\n'),
 
     passage: $ => seq(
       $.passage_header,
       optional($.passage_content)
     ),
 
-    passage_header: $ => seq(
+    passage_header: $ => prec(1, seq(
       '::',
       $.passage_name,
       optional($.tags),
       optional($.metadata)
-    ),
+    )),
 
-    passage_name: $ => /[^\n\[\{]+/,
+    passage_name: $ => seq(/(?:[^\[\{\n\\]|\\.)+/, /[ \t]*/),
 
-    tags: $ => seq(
+    tags: $ => prec.dynamic(1, seq(
       '[',
       optional($.tag_list),
-      ']'
-    ),
+      ']',
+      /[ \t]*/
+    )),
 
     tag_list: $ => repeat1(choice(
       $.tag,
       /\s+/
     )),
     
-    tag: $ => /[^\s\]]+/,
+    tag: $ => /(?:[^\]\s\\]|\\.)+/,
 
-    metadata: $ => seq(
+    metadata: $ => prec.dynamic(1, seq(
       '{',
       $.json_metadata,
       '}'
-    ),
+    )),
 
-    json_metadata: $ => /[^\}]+/,
+    json_metadata: $ => repeat1(choice(
+      /"(?:[^"\\]|\\.)*"/,
+      /[^"}]+/
+    )),
 
     passage_content: $ => repeat1(choice(
       $.text,
@@ -54,9 +63,12 @@ module.exports = grammar({
     )),
 
     text: $ => choice(
-      /[^<\[]+/,
+      /[^<\[:{\n]+/,
+      ':',
       '<',
-      '['
+      '[',
+      '{',
+      '\n'
     ),
 
     macro: $ => seq(

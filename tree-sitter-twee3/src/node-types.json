@@ -20,6 +20,11 @@
     "fields": {}
   },
   {
+    "type": "json_metadata",
+    "named": true,
+    "fields": {}
+  },
+  {
     "type": "link",
     "named": true,
     "fields": {},
@@ -165,6 +170,11 @@
     }
   },
   {
+    "type": "passage_name",
+    "named": true,
+    "fields": {}
+  },
+  {
     "type": "source_file",
     "named": true,
     "root": true,
@@ -219,6 +229,10 @@
     "type": "text",
     "named": true,
     "fields": {}
+  },
+  {
+    "type": "\n",
+    "named": false
   },
   {
     "type": "\"",
@@ -281,10 +295,6 @@
     "named": false
   },
   {
-    "type": "json_metadata",
-    "named": true
-  },
-  {
     "type": "link_text",
     "named": true
   },
@@ -294,10 +304,6 @@
   },
   {
     "type": "number",
-    "named": true
-  },
-  {
-    "type": "passage_name",
     "named": true
   },
   {
