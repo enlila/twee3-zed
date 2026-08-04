@@ -1,14 +1,14 @@
 use regex::Regex;
+use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use walkdir::WalkDir;
-use std::process::Command;
-use serde::Deserialize;
 
 #[derive(Deserialize, Debug, Default)]
 struct TweeConfig {
@@ -46,7 +46,9 @@ impl LanguageServer for Backend {
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+                text_document_sync: Some(TextDocumentSyncCapability::Kind(
+                    TextDocumentSyncKind::FULL,
+                )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(true),
                     trigger_characters: Some(vec!["<".to_string()]),
@@ -70,7 +72,9 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        self.client.log_message(MessageType::INFO, "twee3-lsp initialized!").await;
+        self.client
+            .log_message(MessageType::INFO, "twee3-lsp initialized!")
+            .await;
 
         let wp = self.workspace_path.read().await.clone();
         if let Some(workspace_path) = wp {
@@ -83,14 +87,25 @@ impl LanguageServer for Backend {
             if is_twee {
                 // Dynamic NPM Installation for @types/twine-sugarcube
                 let package_json_path = workspace_path.join("package.json");
-                let node_modules_types = workspace_path.join("node_modules").join("@types").join("twine-sugarcube");
+                let node_modules_types = workspace_path
+                    .join("node_modules")
+                    .join("@types")
+                    .join("twine-sugarcube");
                 let twee3_dir = workspace_path.join(".twee3");
-                let twee3_node_modules_types = twee3_dir.join("node_modules").join("@types").join("twine-sugarcube");
+                let twee3_node_modules_types = twee3_dir
+                    .join("node_modules")
+                    .join("@types")
+                    .join("twine-sugarcube");
 
                 if package_json_path.exists() {
                     // Node project: install into the project's devDependencies if not present
                     if !node_modules_types.exists() {
-                        self.client.log_message(MessageType::INFO, "Found package.json. Installing @types/twine-sugarcube...").await;
+                        self.client
+                            .log_message(
+                                MessageType::INFO,
+                                "Found package.json. Installing @types/twine-sugarcube...",
+                            )
+                            .await;
                         let _ = Command::new("npm")
                             .args(&["install", "--save-dev", "@types/twine-sugarcube"])
                             .current_dir(&workspace_path)
@@ -127,11 +142,17 @@ impl LanguageServer for Backend {
                 // Scan for custom macros
                 let mut macros = self.custom_macros.write().await;
                 let re = Regex::new(r"Macro\.add\(\s*['\x22]([^'\x22]+)['\x22]").unwrap();
-                for entry in WalkDir::new(&workspace_path).into_iter().filter_map(|e| e.ok()) {
+                for entry in WalkDir::new(&workspace_path)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                {
                     let path = entry.path();
                     if path.is_file() && path.extension().map_or(false, |ext| ext == "js") {
                         // ignore node_modules and .twee3
-                        if path.components().any(|c| c.as_os_str() == "node_modules" || c.as_os_str() == ".twee3") {
+                        if path
+                            .components()
+                            .any(|c| c.as_os_str() == "node_modules" || c.as_os_str() == ".twee3")
+                        {
                             continue;
                         }
                         if let Ok(contents) = std::fs::read_to_string(path) {
@@ -143,17 +164,19 @@ impl LanguageServer for Backend {
                         }
                     }
                 }
-                self.client.log_message(MessageType::INFO, format!("Extracted {} custom macros.", macros.len())).await;
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        format!("Extracted {} custom macros.", macros.len()),
+                    )
+                    .await;
             }
         }
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        self.validate_text_document(
-            params.text_document.uri,
-            params.text_document.text,
-        )
-        .await;
+        self.validate_text_document(params.text_document.uri, params.text_document.text)
+            .await;
     }
 
     async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
@@ -204,19 +227,29 @@ impl LanguageServer for Backend {
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
         let uri = params.text_document.uri.clone();
-        
+
         let path = match uri.to_file_path() {
             Ok(p) => p,
             Err(_) => {
-                self.client.log_message(MessageType::WARNING, format!("CodeLens: Failed to convert URI to file path: {}", uri)).await;
+                self.client
+                    .log_message(
+                        MessageType::WARNING,
+                        format!("CodeLens: Failed to convert URI to file path: {}", uri),
+                    )
+                    .await;
                 return Ok(None);
             }
         };
-        
+
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
             Err(e) => {
-                self.client.log_message(MessageType::WARNING, format!("CodeLens: Failed to read file {}: {}", path.display(), e)).await;
+                self.client
+                    .log_message(
+                        MessageType::WARNING,
+                        format!("CodeLens: Failed to read file {}: {}", path.display(), e),
+                    )
+                    .await;
                 return Ok(None);
             }
         };
@@ -241,7 +274,10 @@ impl LanguageServer for Backend {
                     };
 
                     lenses.push(CodeLens {
-                        range: Range { start: start_pos, end: end_pos },
+                        range: Range {
+                            start: start_pos,
+                            end: end_pos,
+                        },
                         command: Some(command),
                         data: None,
                     });
@@ -249,19 +285,28 @@ impl LanguageServer for Backend {
             }
         }
 
-        self.client.log_message(MessageType::INFO, format!("CodeLens: Found {} lenses for {}", lenses.len(), path.display())).await;
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!(
+                    "CodeLens: Found {} lenses for {}",
+                    lenses.len(),
+                    path.display()
+                ),
+            )
+            .await;
 
         Ok(Some(lenses))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = params.text_document.uri.clone();
-        
+
         let path = match uri.to_file_path() {
             Ok(p) => p,
             Err(_) => return Ok(None),
         };
-        
+
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
             Err(_) => return Ok(None),
@@ -274,9 +319,11 @@ impl LanguageServer for Backend {
             if let Some(m) = cap.get(0) {
                 let start_pos = byte_offset_to_position(&text, m.start());
                 let _end_pos = byte_offset_to_position(&text, m.end());
-                
+
                 // If the cursor is anywhere on the passage header line
-                if params.range.start.line == start_pos.line || params.range.end.line == start_pos.line {
+                if params.range.start.line == start_pos.line
+                    || params.range.end.line == start_pos.line
+                {
                     if let Some(name_match) = cap.get(1) {
                         let passage_name = name_match.as_str().trim().to_string();
 
@@ -288,7 +335,7 @@ impl LanguageServer for Backend {
                                 serde_json::Value::String(uri.to_string()),
                             ]),
                         };
-                        
+
                         let action = tower_lsp::lsp_types::CodeAction {
                             title: format!("▶ Run Passage: {}", passage_name),
                             kind: Some(tower_lsp::lsp_types::CodeActionKind::QUICKFIX),
@@ -305,18 +352,28 @@ impl LanguageServer for Backend {
                 }
             }
         }
-        
+
         Ok(Some(actions))
     }
 
-    async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<serde_json::Value>> {
-        self.client.log_message(MessageType::INFO, format!("Executing command: {}", params.command)).await;
+    async fn execute_command(
+        &self,
+        params: ExecuteCommandParams,
+    ) -> Result<Option<serde_json::Value>> {
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("Executing command: {}", params.command),
+            )
+            .await;
         if params.command == "twee3.runPassage" {
             let args = params.arguments;
             if args.len() >= 2 {
                 if let (Some(passage_name), Some(_uri_str)) = (args[0].as_str(), args[1].as_str()) {
                     if let Err(e) = self.run_tweego(passage_name.to_string()).await {
-                        self.client.log_message(MessageType::ERROR, format!("Run passage failed: {}", e)).await;
+                        self.client
+                            .log_message(MessageType::ERROR, format!("Run passage failed: {}", e))
+                            .await;
                     }
                 }
             }
@@ -342,23 +399,38 @@ impl Backend {
             }
         }
 
-        let mut tweego_path = std::env::var("TWEEGO_PATH").unwrap_or_else(|_| "tweego".to_string());
-        
-        // Try local node_modules on Windows
-        #[cfg(target_os = "windows")]
-        {
-            let local_tweego = workspace_path.join("node_modules").join(".bin").join("tweego.cmd");
-            if local_tweego.exists() {
-                tweego_path = local_tweego.to_string_lossy().to_string();
+        let tweego_env = std::env::var("TWEEGO_PATH").unwrap_or_else(|_| "tweego".to_string());
+
+        // If TWEEGO_PATH is relative, it might be relative to the Zed extension directory
+        // where twee3-lsp is installed. Let's resolve it.
+        let tweego_path = if std::path::Path::new(&tweego_env).is_absolute() {
+            tweego_env
+        } else if let Ok(exe_path) = std::env::current_exe() {
+            // current_exe is typically <extension_dir>/twee3-lsp-<version>/twee3-lsp.exe
+            if let Some(ext_dir) = exe_path.parent().and_then(|p| p.parent()) {
+                let absolute_path = ext_dir.join(&tweego_env);
+                if absolute_path.exists() {
+                    absolute_path.to_string_lossy().to_string()
+                } else {
+                    tweego_env
+                }
+            } else {
+                tweego_env
             }
-        }
-        
-        let out_file = config.output_file.unwrap_or_else(|| "dist/game.html".to_string());
+        } else {
+            tweego_env
+        };
+
+        let out_file = config
+            .output_file
+            .unwrap_or_else(|| "dist/game.html".to_string());
         let src_dir = config.source_dir.unwrap_or_else(|| "src".to_string());
-        
+
         let mut args = vec![
-            "-o".to_string(), out_file.clone(),
-            "-s".to_string(), passage_name.clone(),
+            "-o".to_string(),
+            out_file.clone(),
+            "-s".to_string(),
+            passage_name.clone(),
             src_dir,
         ];
 
@@ -373,7 +445,12 @@ impl Backend {
             }
         }
 
-        self.client.log_message(MessageType::INFO, format!("Running Tweego: {} {}", tweego_path, args.join(" "))).await;
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("Running Tweego: {} {}", tweego_path, args.join(" ")),
+            )
+            .await;
 
         let output = Command::new(&tweego_path)
             .args(&args)
@@ -388,22 +465,36 @@ impl Backend {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        
+
         if !stdout.trim().is_empty() {
-            self.client.log_message(MessageType::INFO, format!("Tweego stdout:\n{}", stdout)).await;
+            self.client
+                .log_message(MessageType::INFO, format!("Tweego stdout:\n{}", stdout))
+                .await;
         }
         if !stderr.trim().is_empty() {
-            self.client.log_message(MessageType::INFO, format!("Tweego stderr:\n{}", stderr)).await;
+            self.client
+                .log_message(MessageType::INFO, format!("Tweego stderr:\n{}", stderr))
+                .await;
         }
 
         let out_abs = workspace_path.join(out_file);
-        self.client.log_message(MessageType::INFO, format!("Successfully compiled passage '{}' to {:?}", passage_name, out_abs)).await;
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!(
+                    "Successfully compiled passage '{}' to {:?}",
+                    passage_name, out_abs
+                ),
+            )
+            .await;
 
         // Open in browser
         #[cfg(target_os = "windows")]
         {
             let path_str = out_abs.to_string_lossy().replace("/", "\\");
-            let _ = Command::new("cmd").args(&["/C", "start", "", &path_str]).spawn();
+            let _ = Command::new("cmd")
+                .args(&["/C", "start", "", &path_str])
+                .spawn();
         }
 
         #[cfg(target_os = "macos")]
@@ -423,7 +514,7 @@ impl Backend {
             if let Some(m) = cap.get(0) {
                 let start_idx = m.start();
                 let end_idx = m.end();
-                
+
                 let start_pos = byte_offset_to_position(&text, start_idx);
                 let end_pos = byte_offset_to_position(&text, end_idx);
 
@@ -440,7 +531,10 @@ impl Backend {
                     related_information: Some(vec![DiagnosticRelatedInformation {
                         location: Location {
                             uri: uri.clone(),
-                            range: Range { start: start_pos, end: end_pos },
+                            range: Range {
+                                start: start_pos,
+                                end: end_pos,
+                            },
                         },
                         message: "Spelling matters".to_string(),
                     }]),
