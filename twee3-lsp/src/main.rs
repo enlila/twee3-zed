@@ -441,7 +441,7 @@ impl Backend {
 
         if let Some(modules) = config.modules {
             for md in modules {
-                args.push(format!("--module={}", md));
+                args.push(format!("{}", md));
             }
         }
 
