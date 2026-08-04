@@ -391,13 +391,16 @@ impl Backend {
 
         // Open in browser
         #[cfg(target_os = "windows")]
-        let _ = Command::new("cmd").args(&["/C", "start", "", out_abs.to_str().unwrap()]).spawn();
+        {
+            let path_str = out_abs.to_string_lossy().replace("/", "\\");
+            let _ = Command::new("cmd").args(&["/C", "start", "", &path_str]).spawn();
+        }
 
         #[cfg(target_os = "macos")]
-        let _ = Command::new("open").arg(out_abs).spawn();
+        let _ = Command::new("open").arg(&out_abs).spawn();
 
         #[cfg(target_os = "linux")]
-        let _ = Command::new("xdg-open").arg(out_abs).spawn();
+        let _ = Command::new("xdg-open").arg(&out_abs).spawn();
 
         Ok(())
     }
