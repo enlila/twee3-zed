@@ -386,6 +386,16 @@ impl Backend {
             return Err(format!("Tweego build failed: {}", stderr));
         }
 
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        
+        if !stdout.trim().is_empty() {
+            self.client.log_message(MessageType::INFO, format!("Tweego stdout:\n{}", stdout)).await;
+        }
+        if !stderr.trim().is_empty() {
+            self.client.log_message(MessageType::INFO, format!("Tweego stderr:\n{}", stderr)).await;
+        }
+
         let out_abs = workspace_path.join(out_file);
         self.client.log_message(MessageType::INFO, format!("Successfully compiled passage '{}' to {:?}", passage_name, out_abs)).await;
 
