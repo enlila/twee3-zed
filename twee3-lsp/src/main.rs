@@ -1,6 +1,6 @@
 use regex::Regex;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
@@ -9,6 +9,13 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use walkdir::WalkDir;
+
+#[derive(Debug, Clone)]
+struct PassageMeta {
+    uri: Url,
+    range: Range,
+    preview: String,
+}
 
 #[derive(Deserialize, Debug, Default)]
 struct TweeConfig {
@@ -19,6 +26,7 @@ struct TweeConfig {
     #[serde(rename = "outputFile")]
     output_file: Option<String>,
     modules: Option<Vec<String>>,
+    assets: Option<String>,
 }
 
 #[derive(Debug)]
@@ -26,6 +34,10 @@ struct Backend {
     client: Client,
     custom_macros: Arc<RwLock<HashSet<String>>>,
     workspace_path: Arc<RwLock<Option<PathBuf>>>,
+    // Map of file URI to a map of referenced passage name -> count
+    passage_references: Arc<RwLock<HashMap<Url, HashMap<String, usize>>>>,
+    defined_passages: Arc<RwLock<HashMap<String, PassageMeta>>>,
+    variables: Arc<RwLock<HashSet<String>>>,
 }
 
 #[tower_lsp::async_trait]
@@ -51,7 +63,7 @@ impl LanguageServer for Backend {
                 )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(true),
-                    trigger_characters: Some(vec!["<".to_string()]),
+                    trigger_characters: Some(vec!["<".to_string(), "[".to_string(), "$".to_string()]),
                     ..Default::default()
                 }),
                 code_lens_provider: Some(CodeLensOptions {
@@ -62,6 +74,10 @@ impl LanguageServer for Backend {
                     commands: vec!["twee3.runPassage".to_string()],
                     ..Default::default()
                 }),
+                definition_provider: Some(OneOf::Left(true)),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
+                document_symbol_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -162,6 +178,18 @@ impl LanguageServer for Backend {
                                 }
                             }
                         }
+                    } else if path.is_file() && path.extension().map_or(false, |ext| ext == "twee") {
+                        if path
+                            .components()
+                            .any(|c| c.as_os_str() == "node_modules" || c.as_os_str() == ".twee3")
+                        {
+                            continue;
+                        }
+                        if let Ok(contents) = std::fs::read_to_string(path) {
+                            if let Ok(uri) = Url::from_file_path(path) {
+                                self.parse_document(uri, contents).await;
+                            }
+                        }
                     }
                 }
                 self.client
@@ -175,38 +203,21 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        self.parse_document(params.text_document.uri.clone(), params.text_document.text.clone()).await;
         self.validate_text_document(params.text_document.uri, params.text_document.text)
             .await;
     }
 
     async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
         if let Some(change) = params.content_changes.pop() {
+            self.parse_document(params.text_document.uri.clone(), change.text.clone()).await;
             self.validate_text_document(params.text_document.uri, change.text)
                 .await;
         }
     }
 
-    async fn completion(&self, _: CompletionParams) -> Result<Option<CompletionResponse>> {
-        let mut completions = vec![
-            CompletionItem {
-                label: "passage".to_string(),
-                kind: Some(CompletionItemKind::KEYWORD),
-                detail: Some("Twee3 Passage Details".to_string()),
-                documentation: Some(Documentation::String(
-                    "Creates a new Twee3 passage.".to_string(),
-                )),
-                ..Default::default()
-            },
-            CompletionItem {
-                label: "macro".to_string(),
-                kind: Some(CompletionItemKind::KEYWORD),
-                detail: Some("Twee3 Macro Details".to_string()),
-                documentation: Some(Documentation::String(
-                    "Creates a new Twee3 macro.".to_string(),
-                )),
-                ..Default::default()
-            },
-        ];
+    async fn completion(&self, _params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let mut completions = vec![];
 
         let macros = self.custom_macros.read().await;
         for m in macros.iter() {
@@ -214,6 +225,41 @@ impl LanguageServer for Backend {
                 label: m.clone(),
                 kind: Some(CompletionItemKind::FUNCTION),
                 detail: Some("Custom SugarCube Macro".to_string()),
+                ..Default::default()
+            });
+        }
+
+        let defined = self.defined_passages.read().await;
+        for name in defined.keys() {
+            completions.push(CompletionItem {
+                label: name.clone(),
+                kind: Some(CompletionItemKind::REFERENCE),
+                detail: Some("Passage".to_string()),
+                ..Default::default()
+            });
+        }
+
+        let vars = self.variables.read().await;
+        for v in vars.iter() {
+            completions.push(CompletionItem {
+                label: v.clone(),
+                kind: Some(CompletionItemKind::VARIABLE),
+                detail: Some("Variable".to_string()),
+                ..Default::default()
+            });
+        }
+
+        let built_in_macros = vec![
+            "set", "if", "else", "elseif", "for", "print", "link", "button", 
+            "include", "return", "switch", "case", "default", "widget", 
+            "catch", "finally", "run", "script", "replace", "append", "prepend"
+        ];
+
+        for m in built_in_macros {
+            completions.push(CompletionItem {
+                label: m.to_string(),
+                kind: Some(CompletionItemKind::KEYWORD),
+                detail: Some("Built-in SugarCube Macro".to_string()),
                 ..Default::default()
             });
         }
@@ -279,6 +325,25 @@ impl LanguageServer for Backend {
                             end: end_pos,
                         },
                         command: Some(command),
+                        data: None,
+                    });
+
+                    // Add reference count lens
+                    let pr = self.passage_references.read().await;
+                    let count: usize = pr.values().filter_map(|refs| refs.get(&passage_name)).sum();
+
+                    let ref_command = tower_lsp::lsp_types::Command {
+                        title: format!("{} references", count),
+                        command: "editor.action.showReferences".to_string(),
+                        arguments: None,
+                    };
+
+                    lenses.push(CodeLens {
+                        range: Range {
+                            start: start_pos,
+                            end: end_pos,
+                        },
+                        command: Some(ref_command),
                         data: None,
                     });
                 }
@@ -354,6 +419,332 @@ impl LanguageServer for Backend {
         }
 
         Ok(Some(actions))
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri.clone();
+        let pos = params.text_document_position_params.position;
+
+        let path = match uri.to_file_path() {
+            Ok(p) => p,
+            Err(_) => return Ok(None),
+        };
+
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+
+        // Match [img[...]] or [img[...][...]]
+        let re = Regex::new(r"\[img\[([^\]]+)\](?:\[[^\]]+\])?\]").unwrap();
+        // Match <img src="...">
+        let html_re = Regex::new(r#"<img[^>]+src=["']([^"']+)["'][^>]*>"#).unwrap();
+
+        let wp = self.workspace_path.read().await.clone();
+        let workspace_path = match wp {
+            Some(w) => w,
+            None => return Ok(None),
+        };
+
+        let mut config = TweeConfig::default();
+        let config_path = workspace_path.join("twee-config.yaml");
+        if let Ok(yaml) = std::fs::read_to_string(&config_path) {
+            if let Ok(parsed) = serde_yaml::from_str::<TweeConfig>(&yaml) {
+                config = parsed;
+            }
+        }
+        
+        let assets_dir = config.assets.unwrap_or_else(|| "assets".to_string());
+
+        let mut check_match = |start_idx: usize, end_idx: usize, asset_path: &str| -> Option<GotoDefinitionResponse> {
+            let start_pos = byte_offset_to_position(&text, start_idx);
+            let end_pos = byte_offset_to_position(&text, end_idx);
+
+            if (pos.line > start_pos.line || (pos.line == start_pos.line && pos.character >= start_pos.character))
+                && (pos.line < end_pos.line || (pos.line == end_pos.line && pos.character <= end_pos.character))
+            {
+                // Parse alt text out if it exists [img[alt|path]]
+                let path_str = if let Some((_, p)) = asset_path.split_once('|') {
+                    p.trim()
+                } else if let Some((p, _)) = asset_path.split_once('|') {
+                    p.trim() // if it's path|alt? Twee usually uses alt|path
+                } else {
+                    asset_path.trim()
+                };
+
+                let abs_path = workspace_path.join(&assets_dir).join(path_str);
+                if abs_path.exists() {
+                    if let Ok(target_uri) = Url::from_file_path(abs_path) {
+                        return Some(GotoDefinitionResponse::Scalar(Location {
+                            uri: target_uri,
+                            range: Range {
+                                start: Position { line: 0, character: 0 },
+                                end: Position { line: 0, character: 0 },
+                            },
+                        }));
+                    }
+                }
+            }
+            None
+        };
+
+        for cap in re.captures_iter(&text) {
+            if let Some(m) = cap.get(0) {
+                if let Some(asset_match) = cap.get(1) {
+                    if let Some(res) = check_match(m.start(), m.end(), asset_match.as_str()) {
+                        return Ok(Some(res));
+                    }
+                }
+            }
+        }
+
+        for cap in html_re.captures_iter(&text) {
+            if let Some(m) = cap.get(0) {
+                if let Some(asset_match) = cap.get(1) {
+                    if let Some(res) = check_match(m.start(), m.end(), asset_match.as_str()) {
+                        return Ok(Some(res));
+                    }
+                }
+            }
+        }
+
+        let link_re = Regex::new(r"\[\[(.*?)\]\]").unwrap();
+        for cap in link_re.captures_iter(&text) {
+            if let Some(m) = cap.get(0) {
+                let start_pos = byte_offset_to_position(&text, m.start());
+                let end_pos = byte_offset_to_position(&text, m.end());
+
+                if (pos.line > start_pos.line || (pos.line == start_pos.line && pos.character >= start_pos.character))
+                    && (pos.line < end_pos.line || (pos.line == end_pos.line && pos.character <= end_pos.character))
+                {
+                    let link_content = cap.get(1).unwrap().as_str();
+                    let target = if let Some((_, p)) = link_content.split_once('|') {
+                        p.trim()
+                    } else if let Some((_, p)) = link_content.split_once("->") {
+                        p.trim()
+                    } else if let Some((p, _)) = link_content.split_once("<-") {
+                        p.trim()
+                    } else {
+                        link_content.trim()
+                    };
+
+                    let defined = self.defined_passages.read().await;
+                    if let Some(meta) = defined.get(target) {
+                        return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                            uri: meta.uri.clone(),
+                            range: meta.range,
+                        })));
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri.clone();
+        let pos = params.text_document_position_params.position;
+
+        let path = match uri.to_file_path() {
+            Ok(p) => p,
+            Err(_) => return Ok(None),
+        };
+
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+
+        let line = text.lines().nth(pos.line as usize).unwrap_or("");
+        
+        let link_re = Regex::new(r"\[\[(.*?)\]\]").unwrap();
+        let macro_re = Regex::new(r"<<([a-zA-Z0-9_-]+)").unwrap();
+
+        for cap in link_re.captures_iter(line) {
+            if let Some(m) = cap.get(0) {
+                let start_char = m.start() as u32;
+                let end_char = m.end() as u32;
+                if pos.character >= start_char && pos.character <= end_char {
+                    let link_content = cap.get(1).unwrap().as_str();
+                    let passage = if let Some((_, p)) = link_content.split_once('|') {
+                        p.trim()
+                    } else if let Some((_, p)) = link_content.split_once("->") {
+                        p.trim()
+                    } else if let Some((p, _)) = link_content.split_once("<-") {
+                        p.trim()
+                    } else {
+                        link_content.trim()
+                    };
+
+                    let defined = self.defined_passages.read().await;
+                    if let Some(meta) = defined.get(passage) {
+                        return Ok(Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: format!("**{}**\n\n```twee\n{}\n```", passage, meta.preview),
+                            }),
+                            range: Some(Range {
+                                start: Position { line: pos.line, character: start_char },
+                                end: Position { line: pos.line, character: end_char },
+                            }),
+                        }));
+                    }
+                }
+            }
+        }
+
+        for cap in macro_re.captures_iter(line) {
+            if let Some(m) = cap.get(0) {
+                let start_char = m.start() as u32;
+                let end_char = m.end() as u32;
+                if pos.character >= start_char && pos.character <= end_char {
+                    let macro_name = cap.get(1).unwrap().as_str();
+                    return Ok(Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: format!("SugarCube Macro: **{}**", macro_name),
+                        }),
+                        range: Some(Range {
+                            start: Position { line: pos.line, character: start_char },
+                            end: Position { line: pos.line, character: end_char },
+                        }),
+                    }));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri;
+        let defined = self.defined_passages.read().await;
+
+        let mut symbols = vec![];
+        for (name, meta) in defined.iter() {
+            if meta.uri == uri {
+                #[allow(deprecated)]
+                symbols.push(DocumentSymbol {
+                    name: name.clone(),
+                    detail: None,
+                    kind: SymbolKind::STRING,
+                    tags: None,
+                    deprecated: None,
+                    range: meta.range,
+                    selection_range: meta.range,
+                    children: None,
+                });
+            }
+        }
+        
+        if symbols.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+        }
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let uri = params.text_document_position.text_document.uri.clone();
+        let pos = params.text_document_position.position;
+        let new_name = params.new_name;
+
+        let path = match uri.to_file_path() {
+            Ok(p) => p,
+            Err(_) => return Ok(None),
+        };
+
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+
+        let line = text.lines().nth(pos.line as usize).unwrap_or("");
+        let header_re = Regex::new(r"^::\s*(.+?)(?:\s*\[|$)").unwrap();
+
+        let mut old_name = String::new();
+        let mut header_range = None;
+
+        if let Some(cap) = header_re.captures(line) {
+            if let Some(m) = cap.get(1) {
+                let start_char = m.start() as u32;
+                let end_char = m.end() as u32;
+                if pos.character >= start_char && pos.character <= end_char {
+                    old_name = m.as_str().trim().to_string();
+                    header_range = Some(Range {
+                        start: Position { line: pos.line, character: start_char },
+                        end: Position { line: pos.line, character: end_char },
+                    });
+                }
+            }
+        }
+
+        if old_name.is_empty() {
+            return Ok(None);
+        }
+
+        let mut changes = HashMap::new();
+
+        if let Some(r) = header_range {
+            changes.entry(uri.clone()).or_insert_with(Vec::new).push(TextEdit {
+                range: r,
+                new_text: new_name.clone(),
+            });
+        }
+
+        let pr = self.passage_references.read().await;
+        for (ref_uri, refs) in pr.iter() {
+            if refs.contains_key(&old_name) {
+                if let Ok(ref_path) = ref_uri.to_file_path() {
+                    if let Ok(ref_text) = std::fs::read_to_string(&ref_path) {
+                        let link_re = Regex::new(r"\[\[(.*?)\]\]").unwrap();
+                        for cap in link_re.captures_iter(&ref_text) {
+                            if let Some(m) = cap.get(0) {
+                                let link_content = cap.get(1).unwrap().as_str();
+                                let (display, target) = if let Some((d, p)) = link_content.split_once('|') {
+                                    (Some(d.trim()), p.trim())
+                                } else if let Some((d, p)) = link_content.split_once("->") {
+                                    (Some(d.trim()), p.trim())
+                                } else if let Some((p, d)) = link_content.split_once("<-") {
+                                    (Some(d.trim()), p.trim())
+                                } else {
+                                    (None, link_content.trim())
+                                };
+
+                                if target == old_name {
+                                    let start_pos = byte_offset_to_position(&ref_text, m.start());
+                                    let end_pos = byte_offset_to_position(&ref_text, m.end());
+
+                                    let new_text = if let Some(d) = display {
+                                        format!("[[{}|{}]]", d, new_name)
+                                    } else {
+                                        format!("[[{}]]", new_name)
+                                    };
+
+                                    changes.entry(ref_uri.clone()).or_insert_with(Vec::new).push(TextEdit {
+                                        range: Range { start: start_pos, end: end_pos },
+                                        new_text,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }))
     }
 
     async fn execute_command(
@@ -507,46 +898,126 @@ impl Backend {
     }
 
     async fn validate_text_document(&self, uri: Url, text: String) {
-        let re = Regex::new(r"\b[A-Z]{2,}\b").unwrap();
         let mut diagnostics = vec![];
 
-        for cap in re.captures_iter(&text) {
+        // 1. Broken Links
+        let link_re = Regex::new(r"\[\[(.*?)\]\]").unwrap();
+        let defined = self.defined_passages.read().await;
+
+        for cap in link_re.captures_iter(&text) {
             if let Some(m) = cap.get(0) {
-                let start_idx = m.start();
-                let end_idx = m.end();
+                let link_content = cap.get(1).unwrap().as_str();
+                let passage = if let Some((_, p)) = link_content.split_once('|') {
+                    p.trim()
+                } else if let Some((_, p)) = link_content.split_once("->") {
+                    p.trim()
+                } else if let Some((p, _)) = link_content.split_once("<-") {
+                    p.trim()
+                } else {
+                    link_content.trim()
+                };
 
-                let start_pos = byte_offset_to_position(&text, start_idx);
-                let end_pos = byte_offset_to_position(&text, end_idx);
+                if !defined.contains_key(passage) {
+                    let start_pos = byte_offset_to_position(&text, m.start());
+                    let end_pos = byte_offset_to_position(&text, m.end());
+                    diagnostics.push(Diagnostic {
+                        range: Range { start: start_pos, end: end_pos },
+                        severity: Some(DiagnosticSeverity::WARNING),
+                        message: format!("Passage '{}' does not exist.", passage),
+                        source: Some("twee3".to_string()),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
 
-                diagnostics.push(Diagnostic {
-                    range: Range {
-                        start: start_pos,
-                        end: end_pos,
-                    },
-                    severity: Some(DiagnosticSeverity::WARNING),
-                    code: None,
-                    code_description: None,
-                    source: Some("twee3".to_string()),
-                    message: format!("{} is all uppercase.", m.as_str()),
-                    related_information: Some(vec![DiagnosticRelatedInformation {
-                        location: Location {
-                            uri: uri.clone(),
-                            range: Range {
-                                start: start_pos,
-                                end: end_pos,
-                            },
-                        },
-                        message: "Spelling matters".to_string(),
-                    }]),
-                    tags: None,
-                    data: None,
-                });
+        // 2. Duplicate Passages (this file specifically)
+        let header_re = Regex::new(r"(?m)^::\s*(.+?)(?:\s*\[|$)").unwrap();
+        let mut seen_headers = HashSet::new();
+
+        for cap in header_re.captures_iter(&text) {
+            if let Some(m) = cap.get(0) {
+                let passage_name = cap.get(1).unwrap().as_str().trim().to_string();
+                if !seen_headers.insert(passage_name.clone()) {
+                    let start_pos = byte_offset_to_position(&text, m.start());
+                    let end_pos = byte_offset_to_position(&text, m.end());
+                    diagnostics.push(Diagnostic {
+                        range: Range { start: start_pos, end: end_pos },
+                        severity: Some(DiagnosticSeverity::ERROR),
+                        message: format!("Duplicate passage name '{}'.", passage_name),
+                        source: Some("twee3".to_string()),
+                        ..Default::default()
+                    });
+                }
             }
         }
 
         self.client
             .publish_diagnostics(uri, diagnostics, None)
             .await;
+    }
+
+    async fn parse_document(&self, uri: Url, text: String) {
+        let mut references: HashMap<String, usize> = HashMap::new();
+        // Match links like [[passage]] or [[text|passage]] or [[text->passage]] or [[passage<-text]]
+        let link_re = Regex::new(r"\[\[(.*?)\]\]").unwrap();
+        
+        for cap in link_re.captures_iter(&text) {
+            if let Some(m) = cap.get(1) {
+                let link_content = m.as_str();
+                let passage = if let Some((_, passage)) = link_content.split_once('|') {
+                    passage.trim()
+                } else if let Some((_, passage)) = link_content.split_once("->") {
+                    passage.trim()
+                } else if let Some((passage, _)) = link_content.split_once("<-") {
+                    passage.trim()
+                } else {
+                    link_content.trim()
+                };
+                
+                *references.entry(passage.to_string()).or_insert(0) += 1;
+            }
+        }
+        
+        let mut pr = self.passage_references.write().await;
+        pr.insert(uri.clone(), references);
+
+        let mut defined = self.defined_passages.write().await;
+        // Remove existing definitions from this file
+        defined.retain(|_, meta| meta.uri != uri);
+
+        let mut vars = self.variables.write().await;
+        let var_re = Regex::new(r"([$_][A-Za-z0-9_]+)").unwrap();
+        for cap in var_re.captures_iter(&text) {
+            if let Some(m) = cap.get(1) {
+                vars.insert(m.as_str().to_string());
+            }
+        }
+
+        let header_re = Regex::new(r"(?m)^::\s*(.+?)(?:\s*\[|$)").unwrap();
+        for cap in header_re.captures_iter(&text) {
+            if let Some(m) = cap.get(0) {
+                if let Some(name_match) = cap.get(1) {
+                    let passage_name = name_match.as_str().trim().to_string();
+                    let start_pos = byte_offset_to_position(&text, m.start());
+                    let end_pos = byte_offset_to_position(&text, m.end());
+
+                    let text_after_header = &text[m.end()..];
+                    let preview = text_after_header
+                        .lines()
+                        .skip_while(|l| l.trim().is_empty())
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join("\n");
+
+                    defined.insert(passage_name, PassageMeta {
+                        uri: uri.clone(),
+                        range: Range { start: start_pos, end: end_pos },
+                        preview,
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -567,6 +1038,9 @@ async fn main() {
         client,
         custom_macros: Arc::new(RwLock::new(HashSet::new())),
         workspace_path: Arc::new(RwLock::new(None)),
+        passage_references: Arc::new(RwLock::new(HashMap::new())),
+        defined_passages: Arc::new(RwLock::new(HashMap::new())),
+        variables: Arc::new(RwLock::new(HashSet::new())),
     });
     Server::new(stdin, stdout, socket).serve(service).await;
 }
