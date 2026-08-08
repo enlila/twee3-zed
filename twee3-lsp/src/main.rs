@@ -78,6 +78,25 @@ impl LanguageServer for Backend {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
+                semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+                    SemanticTokensOptions {
+                        work_done_progress_options: WorkDoneProgressOptions::default(),
+                        legend: SemanticTokensLegend {
+                            token_types: vec![
+                                SemanticTokenType::NAMESPACE,
+                                SemanticTokenType::MACRO,
+                                SemanticTokenType::PARAMETER,
+                                SemanticTokenType::VARIABLE,
+                                SemanticTokenType::STRING,
+                                SemanticTokenType::OPERATOR,
+                            ],
+                            token_modifiers: vec![],
+                        },
+                        range: Some(false),
+                        full: Some(SemanticTokensFullOptions::Bool(true)),
+                    }
+                )),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -775,6 +794,306 @@ impl LanguageServer for Backend {
     async fn shutdown(&self) -> Result<()> {
         Ok(())
     }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = params.text_document_position.text_document.uri.clone();
+        let pos = params.text_document_position.position;
+
+        let path = match uri.to_file_path() {
+            Ok(p) => p,
+            Err(_) => return Ok(None),
+        };
+
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+
+        let line = text.lines().nth(pos.line as usize).unwrap_or("");
+        
+        let header_re = Regex::new(r"^::\s*(.+?)(?:\s*\[|$)").unwrap();
+        let link_re = Regex::new(r"\[\[(.*?)\]\]").unwrap();
+
+        let mut target_name = String::new();
+
+        if let Some(cap) = header_re.captures(line) {
+            if let Some(m) = cap.get(1) {
+                let start_char = m.start() as u32;
+                let end_char = m.end() as u32;
+                if pos.character >= start_char && pos.character <= end_char {
+                    target_name = m.as_str().trim().to_string();
+                }
+            }
+        }
+
+        if target_name.is_empty() {
+            for cap in link_re.captures_iter(line) {
+                if let Some(m) = cap.get(0) {
+                    let start_char = m.start() as u32;
+                    let end_char = m.end() as u32;
+                    if pos.character >= start_char && pos.character <= end_char {
+                        let link_content = cap.get(1).unwrap().as_str();
+                        let target = if let Some((_, p)) = link_content.split_once('|') {
+                            p.trim()
+                        } else if let Some((_, p)) = link_content.split_once("->") {
+                            p.trim()
+                        } else if let Some((p, _)) = link_content.split_once("<-") {
+                            p.trim()
+                        } else {
+                            link_content.trim()
+                        };
+                        target_name = target.to_string();
+                        break;
+                    }
+                }
+            }
+        }
+
+        if target_name.is_empty() {
+            return Ok(None);
+        }
+
+        let mut locations = vec![];
+
+        if params.context.include_declaration {
+            let defined = self.defined_passages.read().await;
+            if let Some(meta) = defined.get(&target_name) {
+                locations.push(Location {
+                    uri: meta.uri.clone(),
+                    range: meta.range,
+                });
+            }
+        }
+
+        let pr = self.passage_references.read().await;
+        for (ref_uri, refs) in pr.iter() {
+            if refs.contains_key(&target_name) {
+                if let Ok(ref_path) = ref_uri.to_file_path() {
+                    if let Ok(ref_text) = std::fs::read_to_string(&ref_path) {
+                        let link_re2 = Regex::new(r"\[\[(.*?)\]\]").unwrap();
+                        for cap in link_re2.captures_iter(&ref_text) {
+                            if let Some(m) = cap.get(0) {
+                                let link_content = cap.get(1).unwrap().as_str();
+                                let target = if let Some((_, p)) = link_content.split_once('|') {
+                                    p.trim()
+                                } else if let Some((_, p)) = link_content.split_once("->") {
+                                    p.trim()
+                                } else if let Some((p, _)) = link_content.split_once("<-") {
+                                    p.trim()
+                                } else {
+                                    link_content.trim()
+                                };
+
+                                if target == target_name {
+                                    let start_pos = byte_offset_to_position(&ref_text, m.start());
+                                    let end_pos = byte_offset_to_position(&ref_text, m.end());
+                                    locations.push(Location {
+                                        uri: ref_uri.clone(),
+                                        range: Range { start: start_pos, end: end_pos },
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(Some(locations))
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let uri = params.text_document.uri.clone();
+        let path = match uri.to_file_path() {
+            Ok(p) => p,
+            Err(_) => return Ok(None),
+        };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        struct TokenLoc {
+            line: u32,
+            start_char: u32,
+            length: u32,
+            token_type: u32,
+        }
+
+        let mut tokens = vec![];
+
+        let header_re = Regex::new(r"(?m)^::\s*(.+?)(?:\s*\[|$)").unwrap();
+        for cap in header_re.captures_iter(&text) {
+            if let Some(m) = cap.get(0) {
+                let start_pos = byte_offset_to_position(&text, m.start());
+                tokens.push(TokenLoc {
+                    line: start_pos.line,
+                    start_char: start_pos.character,
+                    length: text[m.start()..m.end()].chars().count() as u32,
+                    token_type: 0, // NAMESPACE
+                });
+            }
+        }
+
+        let link_re = Regex::new(r"\[\[(.*?)\]\]").unwrap();
+        for cap in link_re.captures_iter(&text) {
+            if let Some(m) = cap.get(0) {
+                let start_pos = byte_offset_to_position(&text, m.start());
+                tokens.push(TokenLoc {
+                    line: start_pos.line,
+                    start_char: start_pos.character,
+                    length: text[m.start()..m.end()].chars().count() as u32,
+                    token_type: 4, // STRING
+                });
+            }
+        }
+
+        let macro_block_re = Regex::new(r"<<(.*?)>>").unwrap();
+        for block_cap in macro_block_re.captures_iter(&text) {
+            if let Some(block_m) = block_cap.get(0) {
+                let block_start = block_m.start();
+                let block_end = block_m.end();
+                let inner = block_cap.get(1).unwrap();
+                
+                let block_start_pos = byte_offset_to_position(&text, block_start);
+                tokens.push(TokenLoc {
+                    line: block_start_pos.line,
+                    start_char: block_start_pos.character,
+                    length: 2,
+                    token_type: 5, // OPERATOR
+                });
+                
+                let block_end_pos = byte_offset_to_position(&text, block_end - 2);
+                tokens.push(TokenLoc {
+                    line: block_end_pos.line,
+                    start_char: block_end_pos.character,
+                    length: 2,
+                    token_type: 5, // OPERATOR
+                });
+
+                let inner_text = inner.as_str();
+                let inner_offset = inner.start();
+                let mut chars = inner_text.char_indices().peekable();
+                let mut is_first = true;
+
+                while let Some((i, c)) = chars.next() {
+                    if c.is_whitespace() {
+                        continue;
+                    }
+                    
+                    let token_start_idx = inner_offset + i;
+                    let token_start_pos = byte_offset_to_position(&text, token_start_idx);
+
+                    if c == '$' || c == '_' {
+                        let mut end_idx = i + c.len_utf8();
+                        while let Some(&(j, next_c)) = chars.peek() {
+                            if next_c.is_alphanumeric() || next_c == '_' {
+                                end_idx = j + next_c.len_utf8();
+                                chars.next();
+                            } else {
+                                break;
+                            }
+                        }
+                        tokens.push(TokenLoc {
+                            line: token_start_pos.line,
+                            start_char: token_start_pos.character,
+                            length: text[token_start_idx..(inner_offset + end_idx)].chars().count() as u32,
+                            token_type: 3, // VARIABLE
+                        });
+                        is_first = false;
+                    } else if c == '"' || c == '\'' {
+                        let quote = c;
+                        let mut end_idx = i + c.len_utf8();
+                        let mut escaped = false;
+                        while let Some((j, next_c)) = chars.next() {
+                            end_idx = j + next_c.len_utf8();
+                            if next_c == '\\' {
+                                escaped = !escaped;
+                            } else if next_c == quote && !escaped {
+                                break;
+                            } else {
+                                escaped = false;
+                            }
+                        }
+                        tokens.push(TokenLoc {
+                            line: token_start_pos.line,
+                            start_char: token_start_pos.character,
+                            length: text[token_start_idx..(inner_offset + end_idx)].chars().count() as u32,
+                            token_type: 4, // STRING
+                        });
+                        is_first = false;
+                    } else {
+                        let mut end_idx = i + c.len_utf8();
+                        while let Some(&(j, next_c)) = chars.peek() {
+                            if next_c.is_whitespace() || next_c == '$' || next_c == '_' || next_c == '"' || next_c == '\'' {
+                                break;
+                            }
+                            end_idx = j + next_c.len_utf8();
+                            chars.next();
+                        }
+                        
+                        let token_type = if is_first { 1 } else { 2 }; // MACRO or PARAMETER
+                        tokens.push(TokenLoc {
+                            line: token_start_pos.line,
+                            start_char: token_start_pos.character,
+                            length: text[token_start_idx..(inner_offset + end_idx)].chars().count() as u32,
+                            token_type,
+                        });
+                        is_first = false;
+                    }
+                }
+            }
+        }
+
+        let var_re = Regex::new(r"([$_][A-Za-z0-9_]+)").unwrap();
+        for cap in var_re.captures_iter(&text) {
+            if let Some(m) = cap.get(0) {
+                let start_pos = byte_offset_to_position(&text, m.start());
+                tokens.push(TokenLoc {
+                    line: start_pos.line,
+                    start_char: start_pos.character,
+                    length: text[m.start()..m.end()].chars().count() as u32,
+                    token_type: 3, // VARIABLE
+                });
+            }
+        }
+
+        tokens.sort();
+        tokens.dedup_by_key(|t| (t.line, t.start_char));
+
+        let mut encoded = vec![];
+        let mut last_line = 0;
+        let mut last_char = 0;
+
+        for t in tokens {
+            let delta_line = t.line - last_line;
+            let delta_start = if delta_line == 0 {
+                t.start_char - last_char
+            } else {
+                t.start_char
+            };
+
+            encoded.push(SemanticToken {
+                delta_line,
+                delta_start,
+                length: t.length,
+                token_type: t.token_type,
+                token_modifiers_bitset: 0,
+            });
+
+            last_line = t.line;
+            last_char = t.start_char;
+        }
+
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: None,
+            data: encoded,
+        })))
+    }
 }
 
 impl Backend {
@@ -935,6 +1254,13 @@ impl Backend {
         let header_re = Regex::new(r"(?m)^::\s*(.+?)(?:\s*\[|$)").unwrap();
         let mut seen_headers = HashSet::new();
 
+        let ignore_list = vec![
+            "Start", "StoryInit", "StoryData", "StoryTitle", "StoryAuthor", 
+            "PassageHeader", "PassageFooter", "PassageReady", "PassageDone",
+            "StoryMenu", "StoryShare", "StorySubtitle", "StoryBanner"
+        ];
+        let pr = self.passage_references.read().await;
+
         for cap in header_re.captures_iter(&text) {
             if let Some(m) = cap.get(0) {
                 let passage_name = cap.get(1).unwrap().as_str().trim().to_string();
@@ -948,6 +1274,20 @@ impl Backend {
                         source: Some("twee3".to_string()),
                         ..Default::default()
                     });
+                } else if !ignore_list.contains(&passage_name.as_str()) {
+                    let total_refs: usize = pr.values().filter_map(|refs| refs.get(&passage_name)).sum();
+                    if total_refs == 0 {
+                        let start_pos = byte_offset_to_position(&text, m.start());
+                        let end_pos = byte_offset_to_position(&text, m.end());
+                        diagnostics.push(Diagnostic {
+                            range: Range { start: start_pos, end: end_pos },
+                            severity: Some(DiagnosticSeverity::HINT),
+                            message: format!("Passage '{}' is never linked (orphaned).", passage_name),
+                            source: Some("twee3".to_string()),
+                            tags: Some(vec![DiagnosticTag::UNNECESSARY]),
+                            ..Default::default()
+                        });
+                    }
                 }
             }
         }
