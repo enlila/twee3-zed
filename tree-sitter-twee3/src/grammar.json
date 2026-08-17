@@ -879,7 +879,19 @@
         "members": [
           {
             "type": "PATTERN",
-            "value": "[^\\]\\[\\|<\\-]+"
+            "value": "[^\\]\\[\\|<\\-`\"']+"
+          },
+          {
+            "type": "STRING",
+            "value": "'"
+          },
+          {
+            "type": "STRING",
+            "value": "\""
+          },
+          {
+            "type": "STRING",
+            "value": "`"
           },
           {
             "type": "STRING",
@@ -974,7 +986,19 @@
         "members": [
           {
             "type": "PATTERN",
-            "value": "[^\\]\\[\\|]+"
+            "value": "[^\\]\\[\\|`\"']+"
+          },
+          {
+            "type": "STRING",
+            "value": "'"
+          },
+          {
+            "type": "STRING",
+            "value": "\""
+          },
+          {
+            "type": "STRING",
+            "value": "`"
           },
           {
             "type": "STRING",

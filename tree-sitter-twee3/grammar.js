@@ -180,7 +180,10 @@ module.exports = grammar({
     ),
 
     link_text: $ => repeat1(choice(
-      /[^\]\[\|<\-]+/,
+      /[^\]\[\|<\-`"']+/,
+      "'",
+      '"',
+      "`",
       '<',
       '-',
       '['
@@ -210,7 +213,10 @@ module.exports = grammar({
     ),
 
     image_source: $ => repeat1(choice(
-      /[^\]\[\|]+/,
+      /[^\]\[\|`"']+/,
+      "'",
+      '"',
+      "`",
       '|',
       '[',
       ']'
