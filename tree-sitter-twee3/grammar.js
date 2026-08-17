@@ -2,7 +2,9 @@ module.exports = grammar({
   name: 'twee3',
 
   extras: $ => [
-    /[ \t\r]+/
+    /[ \t\r]+/,
+    $.comment,
+    $.html_comment
   ],
 
   conflicts: $ => [
@@ -110,6 +112,8 @@ module.exports = grammar({
       $.keyword_operator,
       $.operator,
       $.bracket,
+      $.link,
+      $.image,
       /[^\s"'=,\[\]{}<>:a-zA-Z0-9_]+/
     ),
 
@@ -229,6 +233,9 @@ module.exports = grammar({
       seq("==", repeat(choice($.text, $.variable)), "=="),
       seq("^^", repeat(choice($.text, $.variable)), "^^"),
       seq("~~", repeat(choice($.text, $.variable)), "~~")
-    )
+    ),
+
+    comment: $ => token(seq('/*', /[^*]*\*+([^/*][^*]*\*+)*/, '/')),
+    html_comment: $ => token(seq('<!--', /[^-]*\-+([^->][^-]*\-+)*/, '>'))
   }
 });

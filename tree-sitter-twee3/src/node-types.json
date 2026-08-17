@@ -142,7 +142,15 @@
           "named": true
         },
         {
+          "type": "image",
+          "named": true
+        },
+        {
           "type": "keyword_operator",
+          "named": true
+        },
+        {
+          "type": "link",
           "named": true
         },
         {
@@ -588,6 +596,11 @@
     "named": false
   },
   {
+    "type": "comment",
+    "named": true,
+    "extra": true
+  },
+  {
     "type": "def",
     "named": false
   },
@@ -606,6 +619,11 @@
   {
     "type": "gte",
     "named": false
+  },
+  {
+    "type": "html_comment",
+    "named": true,
+    "extra": true
   },
   {
     "type": "identifier",

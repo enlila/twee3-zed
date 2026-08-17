@@ -11,6 +11,8 @@
 (keyword_operator) @keyword
 (operator) @operator
 (image_source) @string.link
+(comment) @comment
+(html_comment) @comment
 
 ; Text Formatting
 ((text_formatting) @markup.bold (#match? @markup.bold "^''"))

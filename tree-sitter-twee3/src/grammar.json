@@ -368,6 +368,14 @@
           "name": "bracket"
         },
         {
+          "type": "SYMBOL",
+          "name": "link"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "image"
+        },
+        {
           "type": "PATTERN",
           "value": "[^\\s\"'=,\\[\\]{}<>:a-zA-Z0-9_]+"
         }
@@ -1193,12 +1201,60 @@
           ]
         }
       ]
+    },
+    "comment": {
+      "type": "TOKEN",
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "/*"
+          },
+          {
+            "type": "PATTERN",
+            "value": "[^*]*\\*+([^/*][^*]*\\*+)*"
+          },
+          {
+            "type": "STRING",
+            "value": "/"
+          }
+        ]
+      }
+    },
+    "html_comment": {
+      "type": "TOKEN",
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "<!--"
+          },
+          {
+            "type": "PATTERN",
+            "value": "[^-]*\\-+([^->][^-]*\\-+)*"
+          },
+          {
+            "type": "STRING",
+            "value": ">"
+          }
+        ]
+      }
     }
   },
   "extras": [
     {
       "type": "PATTERN",
       "value": "[ \\t\\r]+"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "comment"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "html_comment"
     }
   ],
   "conflicts": [
