@@ -70,11 +70,7 @@ impl LanguageServer for Backend {
                 code_lens_provider: Some(CodeLensOptions {
                     resolve_provider: Some(false),
                 }),
-                code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
-                    code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
-                    resolve_provider: Some(false),
-                    work_done_progress_options: WorkDoneProgressOptions::default(),
-                })),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec!["twee3.runPassage".to_string()],
                     ..Default::default()
@@ -431,7 +427,7 @@ impl LanguageServer for Backend {
 
                         let action = tower_lsp::lsp_types::CodeAction {
                             title: format!("▶ Run Passage: {}", passage_name),
-                            kind: Some(tower_lsp::lsp_types::CodeActionKind::QUICKFIX),
+                            kind: None,
                             diagnostics: None,
                             edit: None,
                             command: Some(command),
@@ -1258,6 +1254,7 @@ impl Backend {
                 }
             }
         }
+        drop(defined);
 
         // 2. Duplicate Passages (this file specifically)
         let header_re = Regex::new(r"(?m)^::\s*(.+?)(?:\s*\[|$)").unwrap();
@@ -1330,6 +1327,7 @@ impl Backend {
         
         let mut pr = self.passage_references.write().await;
         pr.insert(uri.clone(), references);
+        drop(pr);
 
         let mut defined = self.defined_passages.write().await;
         // Remove existing definitions from this file
