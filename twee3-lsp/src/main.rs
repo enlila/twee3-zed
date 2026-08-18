@@ -38,6 +38,7 @@ struct Backend {
     passage_references: Arc<RwLock<HashMap<Url, HashMap<String, usize>>>>,
     defined_passages: Arc<RwLock<HashMap<String, PassageMeta>>>,
     variables: Arc<RwLock<HashSet<String>>>,
+    documents: Arc<RwLock<HashMap<Url, String>>>,
 }
 
 #[tower_lsp::async_trait]
@@ -69,7 +70,11 @@ impl LanguageServer for Backend {
                 code_lens_provider: Some(CodeLensOptions {
                     resolve_provider: Some(false),
                 }),
-                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
+                    code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+                    resolve_provider: Some(false),
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                })),
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec!["twee3.runPassage".to_string()],
                     ..Default::default()
@@ -222,6 +227,8 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        self.documents.write().await.insert(params.text_document.uri.clone(), params.text_document.text.clone());
+
         self.parse_document(params.text_document.uri.clone(), params.text_document.text.clone()).await;
         self.validate_text_document(params.text_document.uri, params.text_document.text)
             .await;
@@ -229,6 +236,8 @@ impl LanguageServer for Backend {
 
     async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
         if let Some(change) = params.content_changes.pop() {
+            self.documents.write().await.insert(params.text_document.uri.clone(), change.text.clone());
+
             self.parse_document(params.text_document.uri.clone(), change.text.clone()).await;
             self.validate_text_document(params.text_document.uri, change.text)
                 .await;
@@ -306,7 +315,7 @@ impl LanguageServer for Backend {
             }
         };
 
-        let text = match std::fs::read_to_string(&path) {
+        let text = match self.documents.read().await.get(&uri).cloned().ok_or_else(|| "Document not found in memory".to_string()) {
             Ok(t) => t,
             Err(e) => {
                 self.client
@@ -391,7 +400,7 @@ impl LanguageServer for Backend {
             Err(_) => return Ok(None),
         };
 
-        let text = match std::fs::read_to_string(&path) {
+        let text = match self.documents.read().await.get(&uri).cloned().ok_or_else(|| "Document not found in memory".to_string()) {
             Ok(t) => t,
             Err(_) => return Ok(None),
         };
@@ -452,7 +461,7 @@ impl LanguageServer for Backend {
             Err(_) => return Ok(None),
         };
 
-        let text = match std::fs::read_to_string(&path) {
+        let text = match self.documents.read().await.get(&uri).cloned().ok_or_else(|| "Document not found in memory".to_string()) {
             Ok(t) => t,
             Err(_) => return Ok(None),
         };
@@ -573,7 +582,7 @@ impl LanguageServer for Backend {
             Err(_) => return Ok(None),
         };
 
-        let text = match std::fs::read_to_string(&path) {
+        let text = match self.documents.read().await.get(&uri).cloned().ok_or_else(|| "Document not found in memory".to_string()) {
             Ok(t) => t,
             Err(_) => return Ok(None),
         };
@@ -680,7 +689,7 @@ impl LanguageServer for Backend {
             Err(_) => return Ok(None),
         };
 
-        let text = match std::fs::read_to_string(&path) {
+        let text = match self.documents.read().await.get(&uri).cloned().ok_or_else(|| "Document not found in memory".to_string()) {
             Ok(t) => t,
             Err(_) => return Ok(None),
         };
@@ -804,7 +813,7 @@ impl LanguageServer for Backend {
             Err(_) => return Ok(None),
         };
 
-        let text = match std::fs::read_to_string(&path) {
+        let text = match self.documents.read().await.get(&uri).cloned().ok_or_else(|| "Document not found in memory".to_string()) {
             Ok(t) => t,
             Err(_) => return Ok(None),
         };
@@ -911,7 +920,7 @@ impl LanguageServer for Backend {
             Ok(p) => p,
             Err(_) => return Ok(None),
         };
-        let text = match std::fs::read_to_string(&path) {
+        let text = match self.documents.read().await.get(&uri).cloned().ok_or_else(|| "Document not found in memory".to_string()) {
             Ok(t) => t,
             Err(_) => return Ok(None),
         };
@@ -1381,6 +1390,7 @@ async fn main() {
         passage_references: Arc::new(RwLock::new(HashMap::new())),
         defined_passages: Arc::new(RwLock::new(HashMap::new())),
         variables: Arc::new(RwLock::new(HashSet::new())),
+        documents: Arc::new(RwLock::new(HashMap::new())),
     });
     Server::new(stdin, stdout, socket).serve(service).await;
 }
